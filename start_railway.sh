@@ -2,7 +2,7 @@
 
 echo "Starting LIA Resumo Semanal Service on Railway..."
 
-export PORT=${PORT:-8001}
+export PORT=${PORT:-8000}
 
 echo "Starting FastAPI server on port $PORT..."
 
