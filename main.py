@@ -177,6 +177,10 @@ async def generate_weekly_summary(project_id: str):
 
         proj = supabase.table('projects').select('id,name').eq('id', project_id).single().execute()
         proj_data = _extract_data(proj) or {}
+        if isinstance(proj_data, list):
+            proj_data = proj_data[0] if proj_data else {}
+        if not isinstance(proj_data, dict):
+            proj_data = {}
         project_name = proj_data.get('name') or 'Projeto'
 
         trans = (supabase
@@ -302,10 +306,12 @@ async def list_weekly_summaries(project_id: str, limit: int = 10, offset: int = 
         
         result = query.execute()
         rows = _extract_data(result)
+        if not isinstance(rows, list):
+            rows = []
         
         summaries = []
         for row in rows:
-            meta = row.get('meta', {})
+            meta = row.get('meta', {}) if isinstance(row, dict) else {}
             summaries.append(WeeklySummaryResponse(
                 id=row['id'],
                 project_id=row['project_id'],
