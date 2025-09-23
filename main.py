@@ -65,6 +65,40 @@ def _prev_week_range():
 def _fmt_br(dt):
     return dt.strftime('%d/%m/%Y') if dt else ''
 
+def _validate_uuid_string(value: str) -> str:
+    try:
+        uuid.UUID(value)
+        return value
+    except Exception:
+        raise HTTPException(status_code=422, detail="project_id must be a valid UUID")
+
+def _extract_data(resp):
+    """Safely extract .data from Supabase responses without assuming truthiness.
+
+    Some responses (like empty lists) are falsy; avoid falling back to dict.get
+    on non-dict objects which raises attribute errors.
+    """
+    if resp is None:
+        return []
+    data_attr = getattr(resp, 'data', None)
+    if data_attr is not None:
+        return data_attr
+    if isinstance(resp, dict):
+        return resp.get('data') or []
+    return []
+
+def _extract_count(resp) -> int:
+    if resp is None:
+        return 0
+    cnt = getattr(resp, 'count', None)
+    if isinstance(cnt, int):
+        return cnt
+    if isinstance(resp, dict):
+        c = resp.get('count')
+        if isinstance(c, int):
+            return c
+    return 0
+
 def _generate_claude_summary(project_name: str, meetings: List[Dict], tasks: List[Dict], period_label: str) -> Dict[str, Any]:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
@@ -137,11 +171,12 @@ async def health_check():
 @app.post("/api/projects/{project_id}/weekly-summary", response_model=WeeklySummaryResponse)
 async def generate_weekly_summary(project_id: str):
     try:
+        project_id = _validate_uuid_string(project_id)
         supabase = get_supabase_client()
         year, iso_week, start, end = _prev_week_range()
 
         proj = supabase.table('projects').select('id,name').eq('id', project_id).single().execute()
-        proj_data = getattr(proj, 'data', None) or proj.get('data') or {}
+        proj_data = _extract_data(proj) or {}
         project_name = proj_data.get('name') or 'Projeto'
 
         trans = (supabase
@@ -151,7 +186,7 @@ async def generate_weekly_summary(project_id: str):
                  .gte('created_at', start.isoformat())
                  .lte('created_at', end.isoformat())
                  .execute())
-        trans_rows = getattr(trans, 'data', None) or trans.get('data') or []
+        trans_rows = _extract_data(trans)
         meetings = []
         for r in trans_rows:
             created_at = r.get('created_at')
@@ -172,7 +207,7 @@ async def generate_weekly_summary(project_id: str):
                    .gte('deadline', start.isoformat())
                    .lte('deadline', end.isoformat())
                    .execute())
-        task_rows = getattr(tasks_q, 'data', None) or tasks_q.get('data') or []
+        task_rows = _extract_data(tasks_q)
         tasks = []
         for t in task_rows:
             ddl = t.get('deadline')
@@ -199,7 +234,7 @@ async def generate_weekly_summary(project_id: str):
                     .order('version', desc=True)
                     .limit(1)
                     .execute())
-        rows = getattr(existing, 'data', None) or existing.get('data') or []
+        rows = _extract_data(existing)
         version = 1
         if rows:
             version = int(rows[0].get('version') or 1) + 1
@@ -226,7 +261,7 @@ async def generate_weekly_summary(project_id: str):
             }
         }).execute())
         
-        data = getattr(insert, 'data', None) or insert.get('data')
+        data = _extract_data(insert)
         report_id = data[0]['id']
         
         return WeeklySummaryResponse(
@@ -254,6 +289,7 @@ async def generate_weekly_summary(project_id: str):
 @app.get("/api/projects/{project_id}/weekly-summaries", response_model=WeeklySummaryListResponse)
 async def list_weekly_summaries(project_id: str, limit: int = 10, offset: int = 0):
     try:
+        project_id = _validate_uuid_string(project_id)
         supabase = get_supabase_client()
         
         query = (supabase
@@ -265,7 +301,7 @@ async def list_weekly_summaries(project_id: str, limit: int = 10, offset: int = 
                 .range(offset, offset + limit - 1))
         
         result = query.execute()
-        rows = getattr(result, 'data', None) or result.get('data') or []
+        rows = _extract_data(result)
         
         summaries = []
         for row in rows:
@@ -292,7 +328,9 @@ async def list_weekly_summaries(project_id: str, limit: int = 10, offset: int = 
                        .select('id', count='exact')
                        .eq('project_id', project_id)
                        .execute())
-        total = getattr(count_result, 'count', None) or len(summaries)
+        total = _extract_count(count_result)
+        if total == 0:
+            total = len(summaries)
         
         return WeeklySummaryListResponse(summaries=summaries, total=total)
         
