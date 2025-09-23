@@ -260,6 +260,30 @@ def _next_version_for_week(supabase: Client, project_id: str, year: int, iso_wee
             return 1
     return 1
 
+def _insert_report_with_retry(supabase_admin: Client, payload: Dict[str, Any], max_retries: int = 5) -> Dict[str, Any]:
+    """Insert report, bumping version if unique constraint is hit.
+
+    This protects against races or read inconsistencies by retrying with
+    version+1 when Postgres returns constraint 23505.
+    """
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            resp = supabase_admin.table('project_weekly_reports').insert(payload).execute()
+            data = _extract_data(resp)
+            if not data:
+                raise RuntimeError("Insert returned empty data")
+            return data[0]
+        except Exception as e:
+            s = str(e)
+            if '23505' in s or 'duplicate key' in s:
+                # bump version and retry
+                payload['version'] = int(payload.get('version', 1)) + 1
+                attempt += 1
+                continue
+            raise
+    raise RuntimeError("Could not insert report after retrying versions")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "lia-resumo-semanal"}
@@ -482,7 +506,7 @@ async def generate_weekly_plan(project_id: str):
 
         supabase_admin = get_supabase_admin()
         version = _next_version_for_week(supabase_admin, project_id, year, iso_week)
-        insert = (supabase_admin.table('project_weekly_reports').insert({
+        payload = {
             'project_id': project_id,
             'year': int(year),
             'iso_week': int(iso_week),
@@ -500,10 +524,9 @@ async def generate_weekly_plan(project_id: str):
                 'tasks': len(tasks),
                 'next_actions': plan.get('next_actions', [])
             }
-        }).execute())
-
-        data = _extract_data(insert)
-        report_id = data[0]['id']
+        }
+        inserted = _insert_report_with_retry(supabase_admin, payload)
+        report_id = inserted['id']
 
         return WeeklySummaryResponse(
             id=report_id,
@@ -591,7 +614,7 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
     title = f"Resumo Semanal — Semana {iso_week}, {year} (Parcial)"
     supabase_admin = get_supabase_admin()
     version = _next_version_for_week(supabase_admin, project_id, year, iso_week)
-    supabase_admin.table('project_weekly_reports').insert({
+    payload = {
         'project_id': project_id,
         'year': int(year),
         'iso_week': int(iso_week),
@@ -609,7 +632,8 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
             'tasks': len(tasks),
             'next_actions': result.get('next_actions', [])
         }
-    }).execute()
+    }
+    _insert_report_with_retry(supabase_admin, payload)
 
 @app.on_event("startup")
 def _startup_jobs():
@@ -674,7 +698,7 @@ def _monday_plan_job():
 
                 supabase_admin = get_supabase_admin()
                 version = _next_version_for_week(supabase_admin, pid, year, iso_week)
-                supabase_admin.table('project_weekly_reports').insert({
+                payload = {
                     'project_id': pid,
                     'year': int(year),
                     'iso_week': int(iso_week),
@@ -692,7 +716,8 @@ def _monday_plan_job():
                         'tasks': len(tasks),
                         'next_actions': plan.get('next_actions', [])
                     }
-                }).execute()
+                }
+                _insert_report_with_retry(supabase_admin, payload)
             except Exception:
                 continue
     except Exception:
