@@ -242,6 +242,24 @@ def _current_week_range():
     year, iso_week, _ = monday.isocalendar()
     return year, iso_week, monday, sunday
 
+def _next_version_for_week(supabase: Client, project_id: str, year: int, iso_week: int) -> int:
+    existing = (supabase
+                .table('project_weekly_reports')
+                .select('version')
+                .eq('project_id', project_id)
+                .eq('year', int(year))
+                .eq('iso_week', int(iso_week))
+                .order('version', desc=True)
+                .limit(1)
+                .execute())
+    rows = _extract_data(existing)
+    if rows:
+        try:
+            return int(rows[0].get('version') or 0) + 1
+        except Exception:
+            return 1
+    return 1
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "lia-resumo-semanal"}
@@ -463,13 +481,14 @@ async def generate_weekly_plan(project_id: str):
         title = f"Plano da Semana — Semana {iso_week}, {year}"
 
         supabase_admin = get_supabase_admin()
+        version = _next_version_for_week(supabase_admin, project_id, year, iso_week)
         insert = (supabase_admin.table('project_weekly_reports').insert({
             'project_id': project_id,
             'year': int(year),
             'iso_week': int(iso_week),
             'period_start': start.isoformat(),
             'period_end': end.isoformat(),
-            'version': 1,
+            'version': version,
             'title': title,
             'content_markdown': plan.get('executive_summary', ''),
             'kpis': plan.get('kpis', {}),
@@ -571,13 +590,14 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
     year, iso_week, _, _ = _current_week_range()
     title = f"Resumo Semanal — Semana {iso_week}, {year} (Parcial)"
     supabase_admin = get_supabase_admin()
+    version = _next_version_for_week(supabase_admin, project_id, year, iso_week)
     supabase_admin.table('project_weekly_reports').insert({
         'project_id': project_id,
         'year': int(year),
         'iso_week': int(iso_week),
         'period_start': start.isoformat(),
         'period_end': end.isoformat(),
-        'version': 1,
+        'version': version,
         'title': title,
         'content_markdown': result.get('executive_summary', ''),
         'kpis': result.get('kpis', {}),
@@ -653,13 +673,14 @@ def _monday_plan_job():
                 title = f"Plano da Semana — Semana {iso_week}, {year}"
 
                 supabase_admin = get_supabase_admin()
+                version = _next_version_for_week(supabase_admin, pid, year, iso_week)
                 supabase_admin.table('project_weekly_reports').insert({
                     'project_id': pid,
                     'year': int(year),
                     'iso_week': int(iso_week),
                     'period_start': start.isoformat(),
                     'period_end': end.isoformat(),
-                    'version': 1,
+                    'version': version,
                     'title': title,
                     'content_markdown': plan.get('executive_summary', ''),
                     'kpis': plan.get('kpis', {}),
