@@ -108,19 +108,10 @@ def _anthropic_json(prompt: str) -> Dict[str, Any]:
     and falls back to parsing the best-effort JSON.
     """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    # 1) Try completions API (Claude 2.1)
-    try:
-        content = f"{anthropic.HUMAN_PROMPT}{prompt}{anthropic.AI_PROMPT}"
-        comp = client.completions.create(
-            model="claude-2.1",
-            max_tokens_to_sample=2000,
-            temperature=0.3,
-            prompt=content,
-        )
-        response_text = comp.completion
-        return json.loads(_extract_json_text(response_text))
-    except Exception:
-        # 2) Try messages API (if available)
+    last_error = None
+
+    # Prefer messages API if available
+    if hasattr(client, 'messages'):
         try:
             msg = client.messages.create(
                 model="claude-3-sonnet-20240229",
@@ -131,7 +122,26 @@ def _anthropic_json(prompt: str) -> Dict[str, Any]:
             response_text = msg.content[0].text
             return json.loads(_extract_json_text(response_text))
         except Exception as e:
-            raise e
+            last_error = e
+
+    # Fallback to completions API if available
+    if hasattr(client, 'completions'):
+        try:
+            content = f"{getattr(anthropic, 'HUMAN_PROMPT', '\n\nHuman: ')}{prompt}{getattr(anthropic, 'AI_PROMPT', '\n\nAssistant: ')}"
+            comp = client.completions.create(
+                model="claude-2.1",
+                max_tokens_to_sample=2000,
+                temperature=0.3,
+                prompt=content,
+            )
+            response_text = getattr(comp, 'completion', '') or str(comp)
+            return json.loads(_extract_json_text(response_text))
+        except Exception as e:
+            last_error = e
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No compatible Anthropic API (messages or completions) available")
 
 def _extract_json_text(text: str) -> str:
     try:
