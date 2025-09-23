@@ -204,8 +204,8 @@ Instruções:
 - Responder em JSON válido com os campos:
   - "executive_summary": Uma visão concisa do foco da semana (1-2 parágrafos)
   - "kpis": Métricas-alvo para a semana (ex: {{"tasks_due": "X", "at_risk": "Y"}})
-  - "risks": Array de objetos com {"description", "impact", "mitigation"} focados na semana
-  - "next_actions": Array de objetos {"action", "responsible", "deadline", "priority"} sendo o plano sugerido da semana
+  - "risks": Array de objetos com {{"description", "impact", "mitigation"}} focados na semana
+  - "next_actions": Array de objetos {{"action", "responsible", "deadline", "priority"}} sendo o plano sugerido da semana
   - "agenda_topics": Array de tópicos recomendados para reuniões da semana
 
 - Foque em pendências, riscos de prazo, dependências e decisões necessárias
