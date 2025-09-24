@@ -103,17 +103,28 @@ def _extract_count(resp) -> int:
 
 def _anthropic_json(prompt: str) -> Dict[str, Any]:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    try:
-        msg = client.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=2000,
-            temperature=0.3,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        response_text = msg.content[0].text
-        return json.loads(_extract_json_text(response_text))
-    except Exception as e:
-        raise e
+    candidate_models = [
+        "claude-3-5-sonnet-20240620",
+        "claude-3-sonnet-20240229",
+        "claude-3-haiku-20240307",
+    ]
+    last_err = None
+    for model_name in candidate_models:
+        try:
+            msg = client.messages.create(
+                model=model_name,
+                max_tokens=2000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response_text = msg.content[0].text
+            return json.loads(_extract_json_text(response_text))
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+    raise RuntimeError("No Anthropic model available for messages API")
 
 def _extract_json_text(text: str) -> str:
     try:
