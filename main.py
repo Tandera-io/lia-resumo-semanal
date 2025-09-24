@@ -28,6 +28,7 @@ app.add_middleware(
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL")
 
 def get_supabase_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -103,11 +104,12 @@ def _extract_count(resp) -> int:
 
 def _anthropic_json(prompt: str) -> Dict[str, Any]:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    candidate_models = [
-        "claude-3-5-sonnet-20240620",
-        "claude-3-sonnet-20240229",
+    candidate_models = [m for m in [
+        ANTHROPIC_MODEL,
         "claude-3-haiku-20240307",
-    ]
+        "claude-3-sonnet-20240229",
+        "claude-3-5-sonnet-20240620",
+    ] if m]
     last_err = None
     for model_name in candidate_models:
         try:
