@@ -157,16 +157,18 @@ Tarefas com prazo na semana anterior:
 {tasks_md}
 
 Instruções:
-- Gere um JSON estruturado com os seguintes campos:
-  - "executive_summary": Resumo executivo em 2-3 parágrafos, linguagem executiva e clara
+- Responda APENAS um JSON válido, sem texto fora do JSON.
+- Campos obrigatórios do JSON:
+  - "executive_summary": 2-4 parágrafos, linguagem executiva, incluindo:
+    • principais destaques da semana; • entregas concluídas; • desvios/impedimentos; • recomendações.
   - "kpis": Objeto com métricas concretas (ex: {{"total_meetings": {len(meetings)}, "total_tasks": {len(tasks)}, "completion_rate": "X%", "productivity_score": "X/10"}})
-  - "risks": Array de objetos com {{"description": "descrição do risco", "impact": "alto/médio/baixo", "mitigation": "ação de mitigação"}}
-  - "next_actions": Array de objetos com {{"action": "ação sugerida", "responsible": "responsável sugerido", "deadline": "prazo sugerido", "priority": "alta/média/baixa"}}
+  - "kpi_explanations": Objeto onde cada chave de KPI recebe uma frase curta explicando o porquê da pontuação/valor (ex: {{"productivity_score": "subiu pela redução de retrabalho"}})
+  - "risks": Array com objetos detalhados: {{"description": "descrição do risco clara e específica", "impact": "alto/médio/baixo", "likelihood": "alta/média/baixa", "trigger_signals": ["sinais observáveis"], "mitigation": "plano de mitigação acionável", "owner": "papel sugerido"}}
+  - "next_actions": Array com {{"action": "ação sugerida", "responsible": "responsável sugerido", "deadline": "prazo sugerido", "priority": "alta/média/baixa", "rationale": "por que esta ação agora"}}
 
-- Se não houver dados suficientes, seja criativo mas realista nas sugestões
-- Escreva em português brasileiro
-- Responda APENAS o JSON válido, sem explicações adicionais
-- Foque em insights executivos e direcionamentos estratégicos"""
+- Se não houver dados suficientes, seja pragmático mas realista nas sugestões.
+- Escreva em português brasileiro.
+- Foque em insights executivos e direcionamentos estratégicos."""
 
     try:
         return _anthropic_json(prompt)
@@ -196,16 +198,17 @@ Tarefas com prazo nesta semana:
 {tasks_md}
 
 Instruções:
-- Responder em JSON válido com os campos:
-  - "executive_summary": Uma visão concisa do foco da semana (1-2 parágrafos)
-  - "kpis": Métricas-alvo para a semana (ex: {{"tasks_due": "X", "at_risk": "Y"}})
-  - "risks": Array de objetos com {{"description", "impact", "mitigation"}} focados na semana
-  - "next_actions": Array de objetos {{"action", "responsible", "deadline", "priority"}} sendo o plano sugerido da semana
-  - "agenda_topics": Array de tópicos recomendados para reuniões da semana
+- Responda APENAS um JSON válido, sem texto fora do JSON.
+- Campos obrigatórios do JSON:
+  - "executive_summary": 1-3 parágrafos com foco da semana, prioridades, dependências críticas e decisões esperadas.
+  - "kpis": Métricas-alvo da semana (ex: {{"tasks_due": "X", "at_risk": "Y", "throughput_target": "N tarefas"}})
+  - "kpi_explanations": Objeto com justificativas curtas por KPI-alvo (ex: {{"at_risk": "tarefas com dependência externa sem confirmação"}})
+  - "risks": Array de riscos desta semana com {{"description", "impact", "likelihood", "trigger_signals", "mitigation", "owner"}}
+  - "next_actions": Array com {{"action", "responsible", "deadline", "priority", "rationale"}} priorizadas (alto → baixo)
+  - "agenda_topics": Tópicos recomendados para as reuniões ({{"topic", "reason"}})
 
-- Foque em pendências, riscos de prazo, dependências e decisões necessárias
-- Escreva em português brasileiro
-- Responda APENAS o JSON válido, sem explicações adicionais"""
+- Foque em pendências, riscos de prazo, dependências e decisões necessárias.
+- Escreva em português brasileiro."""
     try:
         data = _anthropic_json(prompt)
         if "agenda_topics" not in data:
