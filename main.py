@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import unicodedata
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -30,6 +31,15 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL")
+
+logger = logging.getLogger("lia_resumo_semanal")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 def get_supabase_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -141,6 +151,39 @@ def _extract_json_text(text: str) -> str:
             raise ValueError("No valid JSON found in provider response")
         return m.group(0)
 
+
+def _log_context(label: str, payload: Dict[str, Any]) -> None:
+    try:
+        logger.info("%s %s", label, json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        logger.info("%s %s", label, payload)
+
+
+def _anthropic_text(prompt: str) -> str:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    candidate_models = [m for m in [
+        ANTHROPIC_MODEL,
+        "claude-3-haiku-20240307",
+        "claude-3-sonnet-20240229",
+        "claude-3-5-sonnet-20240620",
+    ] if m]
+    last_err = None
+    for model_name in candidate_models:
+        try:
+            msg = client.messages.create(
+                model=model_name,
+                max_tokens=2000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return msg.content[0].text.strip()
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+    raise RuntimeError("No Anthropic model available for plain text messages")
+
 SUMMARY_TASK_STATUS_QUERY = [
     "A fazer", "A Fazer", "a fazer",
     "Em Progresso", "Em progresso", "em progresso",
@@ -172,99 +215,6 @@ def _should_include_status(value: Optional[str]) -> bool:
     return _normalize_status(value) in SUMMARY_TASK_STATUS_ALLOW
 
 
-def _format_kpis_text(kpis: Any) -> Optional[str]:
-    if not kpis:
-        return None
-    sentences = []
-    if isinstance(kpis, dict):
-        for key, val in kpis.items():
-            if val in (None, ""):
-                continue
-            sentences.append(f"{key}: {val}")
-    elif isinstance(kpis, list):
-        for item in kpis:
-            if isinstance(item, dict):
-                name = item.get('name') or item.get('metric') or item.get('titulo')
-                value = item.get('value') or item.get('valor')
-                explanation = item.get('explanation') or item.get('context') or item.get('justification')
-                fragments = []
-                if name and value:
-                    fragments.append(f"{name}: {value}")
-                elif name:
-                    fragments.append(name)
-                elif value:
-                    fragments.append(str(value))
-                if explanation:
-                    fragments.append(explanation)
-                if fragments:
-                    sentences.append(" — ".join(fragments))
-            elif isinstance(item, str):
-                text = item.strip()
-                if text:
-                    sentences.append(text)
-    elif isinstance(kpis, str):
-        text = kpis.strip()
-        if text:
-            sentences.append(text)
-    if not sentences:
-        return None
-    return "\n".join(sentences)
-
-
-def _format_risks_text(risks: Any) -> Optional[str]:
-    if not risks:
-        return None
-    sentences = []
-    if isinstance(risks, list):
-        for item in risks:
-            if isinstance(item, dict):
-                desc = item.get('description') or item.get('detalhe') or item.get('resumo')
-                impact = item.get('impact')
-                likelihood = item.get('likelihood') or item.get('probability')
-                mitigation = item.get('mitigation') or item.get('mitigacao')
-                owner = item.get('owner') or item.get('responsavel')
-                components = []
-                if desc:
-                    components.append(desc.strip())
-                if impact or likelihood:
-                    detail = ", ".join(part for part in [
-                        f"impacto {impact}" if impact else None,
-                        f"probabilidade {likelihood}" if likelihood else None
-                    ] if part)
-                    if detail:
-                        components.append(detail)
-                if mitigation:
-                    components.append(f"mitigação: {mitigation}")
-                if owner:
-                    components.append(f"responsável sugerido: {owner}")
-                if components:
-                    sentences.append("; ".join(components))
-            elif isinstance(item, str):
-                text = item.strip()
-                if text:
-                    sentences.append(text)
-    elif isinstance(risks, str):
-        text = risks.strip()
-        if text:
-            sentences.append(text)
-    if not sentences:
-        return None
-    return "\n".join(sentences)
-
-
-def _compose_summary_markdown(executive_summary: str, kpis_text: Optional[str], risks_text: Optional[str]) -> str:
-    sections = []
-    exec_clean = (executive_summary or "").strip()
-    if exec_clean:
-        sections.append(f"Resumo Executivo:\n{exec_clean}")
-    if kpis_text:
-        sections.append(f"KPIs:\n{kpis_text.strip()}")
-    if risks_text:
-        sections.append(f"Riscos:\n{risks_text.strip()}")
-    if not sections:
-        return "Resumo Executivo:\nSem informações disponíveis para esta semana."
-    return "\n\n".join(sections)
-
 def _generate_claude_summary(project_name: str, meetings: List[Dict], tasks: List[Dict], period_label: str) -> Dict[str, Any]:
     meetings_md = "\n".join([
         f"- {m['date']} • {m['title']}" for m in meetings
@@ -274,49 +224,34 @@ def _generate_claude_summary(project_name: str, meetings: List[Dict], tasks: Lis
         for t in tasks
     ]) if tasks else "- (nenhuma)"
 
-    prompt = f"""Você é um analista executivo sênior. Construa um DIAGNÓSTICO SEMANAL completo para o projeto abaixo, em português brasileiro e com tom executivo.
+    prompt = f"""Você é um analista executivo sênior responsável por relatar a última semana do projeto a uma diretoria exigente.
 
-Projeto: {project_name}
+Contexto do projeto: {project_name}
 Período analisado: {period_label}
 
-Insumos disponíveis:
-- Reuniões realizadas na semana anterior:
+Reuniões realizadas na semana anterior:
 {meetings_md}
-- Tarefas do projeto com status ativos ("A fazer", "Em Progresso", "Concluídas"):
+
+Tarefas do projeto em status ativos ("A fazer", "Em Progresso", "Concluídas"):
 {tasks_md}
 
-Instruções de saída:
-- Responda APENAS um JSON válido com a seguinte estrutura:
-{{
-  "executive_summary": "texto corrido, 3 a 5 parágrafos descrevendo a semana sem usar bullet points",
-  "kpis": [
-    {{"name": "nome da métrica", "value": "valor", "explanation": "contexto do que ocorreu"}}
-  ],
-  "risks": [
-    {{"description": "risco claramente identificado", "impact": "alto/médio/baixo", "likelihood": "alta/média/baixa", "mitigation": "plano de ação", "owner": "papel responsável"}}
-  ]
-}}
-- Use arrays vazios para "kpis" ou "risks" quando não houver informações relevantes.
-- Só inclua KPIs quando existirem métricas objetivas nas tarefas ou reuniões.
-- Só inclua riscos se houver sinais explícitos nos dados fornecidos.
-- Destaque resultados, dependências, impactos e contexto da semana no "executive_summary".
-- Não inclua listas ou tópicos no "executive_summary"; use parágrafos coesos.
-- O texto precisa ser direto e útil para diretoria.
+Produza apenas o resumo executivo completo da semana, em português brasileiro, seguindo estas regras:
+- Escreva 4 a 6 parágrafos em prosa contínua (sem tópicos, sem listas, sem JSON).
+- Cite explicitamente fatos concretos vindos das reuniões e tarefas (datas, prazos, responsáveis, status, decisões, riscos percebidos, impactos em entregas).
+- Explique como cada evento afetou o andamento do projeto e quais ações estão em curso.
+- Se algum dado estiver ausente, declare isso de forma transparente ao invés de inventar.
+- Mantenha tom executivo, claro e objetivo, adequado a C-level.
+- Finalize com um parágrafo sintetizando próximos passos imediatos já evidentes nas fontes acima.
+- Responda SOMENTE com o texto final do resumo executivo.
 """
 
     try:
-        raw = _anthropic_json(prompt)
-        executive_summary = (raw.get('executive_summary') or '').strip()
-        kpis_text = _format_kpis_text(raw.get('kpis'))
-        risks_text = _format_risks_text(raw.get('risks'))
-        composed = _compose_summary_markdown(executive_summary, kpis_text, risks_text)
+        summary_text = _anthropic_text(prompt)
+        if not summary_text:
+            raise ValueError("Modelo retornou texto vazio")
         return {
-            "executive_summary": executive_summary,
-            "kpis_text": kpis_text,
-            "risks_text": risks_text,
-            "content": composed,
-            "raw_kpis": raw.get('kpis'),
-            "raw_risks": raw.get('risks')
+            "executive_summary": summary_text,
+            "content": summary_text
         }
 
     except Exception as e:
@@ -325,14 +260,9 @@ Instruções de saída:
             f"Registrei {len(meetings)} reunião(ões) e {len(tasks)} tarefa(s) em andamento. "
             f"Não consegui elaborar uma análise detalhada devido a um erro técnico: {str(e)}"
         )
-        composed = _compose_summary_markdown(fallback_exec, None, None)
         return {
             "executive_summary": fallback_exec,
-            "kpis_text": None,
-            "risks_text": None,
-            "content": composed,
-            "raw_kpis": None,
-            "raw_risks": None
+            "content": fallback_exec
         }
 
 def _generate_claude_week_plan(project_name: str, tasks: List[Dict], period_label: str) -> Dict[str, Any]:
@@ -440,6 +370,13 @@ async def generate_weekly_summary(project_id: str):
             proj_data = {}
         project_name = proj_data.get('name') or 'Projeto'
 
+        _log_context("weekly_summary.project", {
+            "project_id": project_id,
+            "project_name": project_name,
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+        })
+
         trans = (supabase
                  .table('transcriptions')
                  .select('id,title,reuniao,created_at')
@@ -460,6 +397,12 @@ async def generate_weekly_summary(project_id: str):
                 'title': r.get('reuniao') or r.get('title') or 'Reunião', 
                 'date': _fmt_br(created_dt)
             })
+
+        _log_context("weekly_summary.meetings", {
+            "project_id": project_id,
+            "count": len(meetings),
+            "items": meetings
+        })
 
         tasks_q = (supabase
                    .table('kanban_tasks')
@@ -489,9 +432,19 @@ async def generate_weekly_summary(project_id: str):
             })
         tasks.sort(key=lambda item: (_normalize_status(item.get('status')), item.get('deadline') or '', item.get('title') or ''))
 
+        _log_context("weekly_summary.tasks", {
+            "project_id": project_id,
+            "count": len(tasks),
+            "items": tasks
+        })
+
         period_label = f"{_fmt_br(start)} a {_fmt_br(end)}"
         
         claude_result = _generate_claude_summary(project_name, meetings, tasks, period_label)
+        _log_context("weekly_summary.summary_generated", {
+            "project_id": project_id,
+            "summary_preview": claude_result.get('executive_summary', '')[:500]
+        })
         
         existing = (supabase.table('project_weekly_reports')
                     .select('id, version')
@@ -518,18 +471,18 @@ async def generate_weekly_summary(project_id: str):
             'version': version,
             'title': title,
             'content_markdown': claude_result.get('content'),
-            'kpis': claude_result.get('kpis_text'),
-            'risks': claude_result.get('risks_text'),
+            'kpis': None,
+            'risks': None,
             'meta': {
                 'generated_from': 'lia-resumo-semanal',
                 'report_type': 'weekly_summary',
                 'meetings': len(meetings),
                 'tasks': len(tasks),
-                'raw_kpis': claude_result.get('raw_kpis'),
-                'raw_risks': claude_result.get('raw_risks'),
-                'executive_summary_raw': claude_result.get('executive_summary'),
-                'kpis_text': claude_result.get('kpis_text'),
-                'risks_text': claude_result.get('risks_text')
+                'context': {
+                    'meetings': meetings,
+                    'tasks': tasks
+                },
+                'executive_summary_raw': claude_result.get('executive_summary')
             }
         }).execute())
         
@@ -545,8 +498,8 @@ async def generate_weekly_summary(project_id: str):
             period_end=end.isoformat(),
             title=title,
             executive_summary=claude_result.get('executive_summary', ''),
-            kpis=claude_result.get('kpis_text'),
-            risks=claude_result.get('risks_text'),
+            kpis=None,
+            risks=None,
             next_actions=None,
             meetings_count=len(meetings),
             tasks_count=len(tasks),
@@ -596,8 +549,8 @@ async def list_weekly_summaries(project_id: str, limit: int = 10, offset: int = 
                 period_end=row['period_end'],
                 title=row['title'],
                 executive_summary=summary_text,
-                kpis=stored_kpis or (meta.get('kpis_text') if isinstance(meta, dict) else None),
-                risks=stored_risks or (meta.get('risks_text') if isinstance(meta, dict) else None),
+                kpis=stored_kpis,
+                risks=stored_risks,
                 next_actions=meta.get('next_actions') if isinstance(meta, dict) else None,
                 meetings_count=meta.get('meetings', 0),
                 tasks_count=meta.get('tasks', 0),
@@ -631,6 +584,13 @@ async def generate_weekly_plan(project_id: str):
             proj_data = proj_data[0] if proj_data else {}
         project_name = proj_data.get('name') or 'Projeto'
 
+        _log_context("weekly_plan.project", {
+            "project_id": project_id,
+            "project_name": project_name,
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat()
+        })
+
         tasks_q = (supabase
                    .table('kanban_tasks')
                    .select('id,title,status,deadline')
@@ -653,8 +613,18 @@ async def generate_weekly_plan(project_id: str):
                 'deadline': _fmt_br(ddl_dt) if ddl_dt else '—'
             })
 
+        _log_context("weekly_plan.tasks", {
+            "project_id": project_id,
+            "count": len(tasks),
+            "items": tasks
+        })
+
         period_label = f"{_fmt_br(start)} a {_fmt_br(end)}"
         plan = _generate_claude_week_plan(project_name, tasks, period_label)
+        _log_context("weekly_plan.generated", {
+            "project_id": project_id,
+            "summary_preview": plan.get('executive_summary', '')[:500]
+        })
 
         title = f"Plano da Semana — Semana {iso_week}, {year}"
 
@@ -727,6 +697,13 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
         proj_data = proj_data[0] if proj_data else {}
     project_name = proj_data.get('name') or 'Projeto'
 
+    _log_context("scheduled_summary.project", {
+        "project_id": project_id,
+        "project_name": project_name,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat()
+    })
+
     trans = (supabase
              .table('transcriptions')
              .select('id,title,reuniao,created_at')
@@ -743,6 +720,12 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
         except Exception:
             created_dt = start
         meetings.append({'id': r.get('id'), 'title': r.get('reuniao') or r.get('title') or 'Reunião', 'date': _fmt_br(created_dt)})
+
+    _log_context("scheduled_summary.meetings", {
+        "project_id": project_id,
+        "count": len(meetings),
+        "items": meetings
+    })
 
     tasks_q = (supabase
                .table('kanban_tasks')
@@ -772,8 +755,18 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
         })
     tasks.sort(key=lambda item: (_normalize_status(item.get('status')), item.get('deadline') or '', item.get('title') or ''))
 
+    _log_context("scheduled_summary.tasks", {
+        "project_id": project_id,
+        "count": len(tasks),
+        "items": tasks
+    })
+
     period_label = f"{_fmt_br(start)} a {_fmt_br(end)}"
     result = _generate_claude_summary(project_name, meetings, tasks, period_label)
+    _log_context("scheduled_summary.summary_generated", {
+        "project_id": project_id,
+        "summary_preview": result.get('executive_summary', '')[:500]
+    })
 
     year, iso_week, _, _ = _current_week_range()
     title = f"Resumo Semanal — Semana {iso_week}, {year} (Parcial)"
@@ -788,18 +781,18 @@ def generate_summary_for_range(project_id: str, start: datetime, end: datetime):
         'version': version,
         'title': title,
         'content_markdown': result.get('content'),
-        'kpis': result.get('kpis_text'),
-        'risks': result.get('risks_text'),
+        'kpis': None,
+        'risks': None,
         'meta': {
             'generated_from': 'lia-resumo-semanal',
             'report_type': 'friday_partial_summary',
             'meetings': len(meetings),
             'tasks': len(tasks),
-            'raw_kpis': result.get('raw_kpis'),
-            'raw_risks': result.get('raw_risks'),
-            'executive_summary_raw': result.get('executive_summary'),
-            'kpis_text': result.get('kpis_text'),
-            'risks_text': result.get('risks_text')
+            'context': {
+                'meetings': meetings,
+                'tasks': tasks
+            },
+            'executive_summary_raw': result.get('executive_summary')
         }
     }
     _insert_report_with_retry(supabase_admin, payload)
