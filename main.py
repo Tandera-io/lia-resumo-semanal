@@ -27,8 +27,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# Adicionar middleware de tenant (DEPOIS do CORS para que OPTIONS seja processado primeiro)
+from middleware.tenant import TenantMiddleware, get_tenant_context
+app.add_middleware(TenantMiddleware)
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL")
 
@@ -41,11 +43,47 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 logger.propagate = True
 
+def _clean_env_value(v: str) -> str:
+    return (v or "").strip().strip('"').strip("'")
+
 def get_supabase_client() -> Client:
+    """Cria cliente Supabase com suporte multi-tenancy"""
+    # Tentar obter credenciais do contexto do tenant (multi-tenancy)
+    try:
+        tenant_ctx = get_tenant_context()
+        if tenant_ctx.tenant_slug and tenant_ctx.tenant_data:
+            url = tenant_ctx.get_supabase_url()
+            key = tenant_ctx.get_anon_key()
+            
+            if url and key:
+                logger.info(f"[Supabase] Usando credenciais do tenant: {tenant_ctx.tenant_slug}")
+                return create_client(url, key)
+    except Exception as e:
+        logger.debug(f"[Supabase] Tenant context não disponível, usando credenciais padrão: {e}")
+    
+    # Fallback para credenciais padrão do .env
+    SUPABASE_URL = _clean_env_value(os.getenv("SUPABASE_URL") or "")
+    SUPABASE_KEY = _clean_env_value(os.getenv("SUPABASE_KEY") or "")
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_supabase_admin() -> Client:
-    service_key = os.getenv("SUPABASE_SERVICE_KEY") or SUPABASE_KEY
+    """Cliente Supabase com privilégios administrativos (bypass RLS) - suporte multi-tenancy"""
+    # Tentar obter credenciais do contexto do tenant (multi-tenancy)
+    try:
+        tenant_ctx = get_tenant_context()
+        if tenant_ctx.tenant_slug and tenant_ctx.tenant_data:
+            url = tenant_ctx.get_supabase_url()
+            service_key = tenant_ctx.get_service_key()
+            
+            if url and service_key:
+                logger.info(f"[Supabase] Usando SERVICE_ROLE do tenant: {tenant_ctx.tenant_slug}")
+                return create_client(url, service_key)
+    except Exception as e:
+        logger.debug(f"[Supabase] Tenant context SERVICE_ROLE não disponível, usando credenciais padrão: {e}")
+    
+    # Fallback para credenciais padrão do .env
+    SUPABASE_URL = _clean_env_value(os.getenv("SUPABASE_URL") or "")
+    service_key = _clean_env_value(os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or "")
     return create_client(SUPABASE_URL, service_key)
 
 class WeeklySummaryResponse(BaseModel):
